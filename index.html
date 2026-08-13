@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChessL!!ne</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png" />
+
+  <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <nav>
+    <div class="nav-left">
+      <span class="logo-img"><img src="/assets/favicon.png" alt="Logo"></span>
+      <span class="site-name">ChessL<img src="/assets/brilliant.png" alt="!!" class="site-name-icon">ne</span>
+
+    </div>
+    <div class="nav-right">
+      <button class="chip active" id="chipAnalyse" onclick="setMode('analyse')">Analyse</button>
+      <button class="chip" id="chipHistory" onclick="setMode('history')">History</button>
+    </div>
+  </nav>
+
+  <div class="layout">
+
+    <aside class="panel-left">
+
+      <div class="board-window">
+        <div class="board-window-bar">
+          <span class="bw-dots"><i></i><i></i><i></i></span>
+          <span class="bw-path">board.fen</span>
+        </div>
+        <div class="board-window-body">
+          <div id="board"></div>
+        </div>
+      </div>
+
+      <div class="turn-bar">
+        <div class="turn-pill" id="turnW">
+          <span class="turn-dot white"></span> White to move
+        </div>
+        <div class="turn-pill hidden" id="turnB">
+          <span class="turn-dot black"></span> Black to move
+        </div>
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-row">
+          <button class="btn-ctrl" onclick="resetBoard()" title="Reset board">🔄 Reset</button>
+          <button class="btn-ctrl" onclick="flipBoard()" title="Flip board">🔃 Flip</button>
+          <button class="btn-ctrl" onclick="undoMove()" title="Undo last move">↩️ Undo</button>
+        </div>
+
+        <div class="fen-row">
+          <input class="fen-input" id="fenInput"
+            value="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            placeholder="Paste FEN…" />
+          <button class="btn-load" onclick="loadFEN()">Load</button>
+        </div>
+
+        <button class="btn-analyse" id="analyseBtn" onclick="analyse()">
+          <span id="btnLabel">Find the Best Move</span><span class="btn-spin" id="btnSpin"></span>
+        </button>
+      </div>
+
+    </aside>
+
+    <section class="panel-right" id="panelRight">
+
+      <div class="empty" id="emptyState">
+        <img class="brilliant-img" src="/assets/brilliant.png" alt="Brilliant Move">
+        <h2>No position analysed</h2>
+        <p>Drag pieces to build a position, or paste a FEN string. Then run <strong>analyse</strong>.</p>
+      </div>
+
+
+      <div class="result-card hidden" id="moveCard">
+        <div class="out-head">
+          <span class="out-tag">ENGINE</span>
+        </div>
+        <div class="out-body">
+          <div class="move-display">
+            <div class="move-token" id="moveToken">—</div>
+            <div class="move-meta">
+              <div class="meta-row"><span class="meta-key">From</span><span class="meta-val" id="mFrom">—</span></div>
+              <div class="meta-row"><span class="meta-key">To</span><span class="meta-val" id="mTo">—</span></div>
+            </div>
+          </div>
+          <div class="eval-block">
+            <div class="eval-labels">
+              <span>Position Strength</span>
+              <span id="evalLabel">—</span>
+            </div>
+            <div class="eval-track">
+              <div class="eval-fill" id="evalFill"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="result-card hidden accent-cyan" id="explainCard">
+        <div class="out-head">
+          <span class="out-tag">AI</span>
+        </div>
+        <div class="out-body">
+          <p class="explain-text" id="explainText">—</p>
+        </div>
+      </div>
+
+      <div class="result-card hidden" id="historyCard">
+        <div class="out-head">
+          <span class="out-tag">HISTORY</span>
+        </div>
+        <div class="out-body">
+          <div class="history-grid" id="historyGrid">
+            <span class="no-moves">No moves yet.</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+  </div>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
