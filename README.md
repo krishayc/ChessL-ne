@@ -18,8 +18,11 @@ included in this repo (too large for GitHub).
 5. Create a `.env` file with your AWS credentials:
    
    >AWS_ACCESS_KEY_ID=...
+
    >AWS_SECRET_ACCESS_KEY=...
+
    >AWS_REGION=ap-south-1
+   
    >BEDROCK_MODEL_ID=global.amazon.nova-2-lite-v1:0
    
 6. Run the backend:
