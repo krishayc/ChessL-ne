@@ -1,4 +1,5 @@
 import os
+import re
 import atexit
 import threading
 from flask import Flask, request, jsonify
@@ -24,7 +25,7 @@ bedrock = boto3.client(
 )
 
 engine = chess.engine.SimpleEngine.popen_uci("./stockfish")
-engine_lock = threading.Lock() 
+engine_lock = threading.Lock()
 
 
 @atexit.register
@@ -36,23 +37,250 @@ def shutdown_engine():
         pass
 
 
-def get_ai_explanation(fen, san_move):
+# ── Ground-truth move description ──────────────────────────────────────────
+# The model used to be handed a raw FEN + SAN string and asked to figure out
+# what was actually happening on the board. That's exactly the kind of
+# spatial-reasoning step small/fast models get wrong. python-chess already
+# knows the real answer, so we compute it here and hand the model a fact to
+# explain instead of a puzzle to solve.
+
+PIECE_NAMES = {
+    chess.PAWN: "pawn",
+    chess.KNIGHT: "knight",
+    chess.BISHOP: "bishop",
+    chess.ROOK: "rook",
+    chess.QUEEN: "queen",
+    chess.KING: "king",
+}
+
+
+def _rooks_connected(board, color):
+    """True if `color`'s two rooks are both on the back rank with nothing between them."""
+    back_rank = 0 if color == chess.WHITE else 7
+    rook = chess.Piece(chess.ROOK, color)
+    rook_squares = [chess.square(f, back_rank) for f in range(8)
+                     if board.piece_at(chess.square(f, back_rank)) == rook]
+    if len(rook_squares) != 2:
+        return False
+    lo, hi = sorted(chess.square_file(s) for s in rook_squares)
+    return not any(board.piece_at(chess.square(f, back_rank)) for f in range(lo + 1, hi))
+
+
+def _semi_open_for_rook(board, color, file_idx):
+    """True if a friendly rook sits on `file_idx` and no pawn of `color` blocks that file."""
+    rook = chess.Piece(chess.ROOK, color)
+    pawn = chess.Piece(chess.PAWN, color)
+    squares = [chess.square(file_idx, r) for r in range(8)]
+    if not any(board.piece_at(s) == rook for s in squares):
+        return False
+    return not any(board.piece_at(s) == pawn for s in squares)
+
+
+def _new_coverage(board, move):
+    """Squares the mover attacks from its destination that it did NOT
+    already attack from its origin square. This is the actual before/after
+    diff -- e.g. a rook sliding up the same open file it already controlled
+    covers no new squares along that file, so nothing on it should be
+    reported as 'newly' attacked or defended.
+    """
+    before_attacks = board.attacks(move.from_square)
+    board.push(move)
+    after_attacks = board.attacks(move.to_square)
+    board.pop()
+    return after_attacks - before_attacks
+
+
+def _newly_attacked_pieces(board, move, color, new_squares):
+    """Opponent pieces newly covered by the mover (per `new_squares`,
+    already diffed against the pre-move attack set)."""
+    targets = []
+    for sq in new_squares:
+        target = board.piece_at(sq)
+        if target and target.color != color:
+            targets.append((PIECE_NAMES[target.piece_type], chess.square_name(sq)))
+    return targets
+
+
+def _newly_defended_pieces(board, move, color, new_squares):
+    """Friendly pieces newly covered by the mover (per `new_squares`) --
+    e.g. a rook sliding onto a rank/file that now protects its own bishop."""
+    defended = []
+    for sq in new_squares:
+        target = board.piece_at(sq)
+        if target and target.color == color and sq != move.to_square:
+            defended.append((PIECE_NAMES[target.piece_type], chess.square_name(sq)))
+    return defended
+
+
+CENTER_SQUARES = {chess.D4, chess.D5, chess.E4, chess.E5}
+
+
+def _newly_controls_center(new_squares):
+    """Center squares (d4/d5/e4/e5) newly covered by the mover, per the
+    pre-diffed `new_squares` set."""
+    return sorted(chess.square_name(sq) for sq in new_squares & CENTER_SQUARES)
+
+
+def _mobility(board, move):
+    """Number of squares the piece newly covers from its destination square,
+    vs. how many it covered from its origin square. Used as a last-resort
+    fact that is always true and always computable -- unlike the old
+    'quiet developing move' line, this never has nothing to say.
+    """
+    before = len(board.attacks(move.from_square))
+    board.push(move)
+    after = len(board.attacks(move.to_square))
+    board.pop()
+    return before, after
+
+
+def describe_move(board, move):
+    """Plain-English, ground-truth description of `move` on `board` (pre-move).
+
+    Beyond the mechanical facts (mover/capture/check), the model kept inventing
+    generic-sounding positional claims -- "connects the rooks", "opens the file"
+    -- that weren't actually true of the position. So those specific claims are
+    now computed here too, and only ever mentioned if this exact move causes
+    them to flip from false to true. If they don't apply, they're just omitted.
+
+    For quiet moves with no capture/check/rook feature, we also compute what
+    the piece newly attacks and whether it newly contests the center -- real,
+    true facts that give the model something substantive to explain instead
+    of either inventing something false or being told to say nothing.
+    """
+    mover = board.piece_at(move.from_square)
+    color = mover.color
+    from_file = chess.square_file(move.from_square)
+    is_castle = board.is_castling(move)
+
+    connected_before = _rooks_connected(board, color)
+    open_before = _semi_open_for_rook(board, color, from_file)
+
+    if is_castle:
+        side = "kingside" if chess.square_file(move.to_square) == 6 else "queenside"
+        who = "White" if color == chess.WHITE else "Black"
+        desc = f"{who} castles {side}"
+    else:
+        mover_name = PIECE_NAMES[mover.piece_type]
+        who = "White" if color == chess.WHITE else "Black"
+        from_sq = chess.square_name(move.from_square)
+        to_sq = chess.square_name(move.to_square)
+
+        if board.is_en_passant(move):
+            captured_name = "pawn"
+        else:
+            captured = board.piece_at(move.to_square)
+            captured_name = PIECE_NAMES[captured.piece_type] if captured else None
+
+        desc = f"{who}'s {mover_name} moves from {from_sq} to {to_sq}"
+        if captured_name:
+            desc += f", capturing the {captured_name}"
+        if move.promotion:
+            desc += f", promoting to a {PIECE_NAMES[move.promotion]}"
+
+    board.push(move)
+    gives_check = board.is_check()
+    connected_after = _rooks_connected(board, color)
+    open_after = _semi_open_for_rook(board, color, from_file)
+    board.pop()
+
+    connects_rooks = connected_after and not connected_before
+    opens_file = open_after and not open_before and not is_castle
+
+    if gives_check:
+        desc += ", giving check"
+    if connects_rooks:
+        desc += ", connecting the rooks"
+    if opens_file:
+        desc += f", opening the {chess.FILE_NAMES[from_file]}-file for the rook"
+
+    has_capture = bool(re.search(r"capturing the", desc))
+    has_promotion = bool(move.promotion)
+
+    # Only reach for the extra attack/center facts when the move doesn't
+    # already have a headline feature -- keeps the sentence focused for
+    # tactical moves, and gives quiet moves something real to say instead
+    # of nothing.
+    extra_squares = []
+    if not (has_capture or has_promotion or gives_check or connects_rooks or opens_file or is_castle):
+        new_squares = _new_coverage(board, move)
+        targets = _newly_attacked_pieces(board, move, color, new_squares)
+        defends = _newly_defended_pieces(board, move, color, new_squares)
+        center = _newly_controls_center(new_squares)
+
+        if targets:
+            piece_word, sq = targets[0]
+            desc += f", newly attacking the {piece_word} on {sq}"
+            extra_squares.append(sq)
+        elif defends:
+            piece_word, sq = defends[0]
+            desc += f", newly defending the {piece_word} on {sq}"
+            extra_squares.append(sq)
+        elif center:
+            squares_str = " and ".join(center)
+            desc += f", newly controlling the center square{'s' if len(center) > 1 else ''} {squares_str}"
+            extra_squares.extend(center)
+        else:
+            _, after = _mobility(board, move)
+            desc += f", giving the {PIECE_NAMES[mover.piece_type]} control of {after} square{'s' if after != 1 else ''} from its new post"
+
+    return desc + ".", extra_squares
+
+
+def validate_explanation(explanation, move, extra_squares):
+    """Reject the LLM's text if it references any square other than the
+    move's own from/to squares plus whatever extra squares describe_move()
+    actually computed (newly-attacked piece / newly-controlled center
+    square). This is what guarantees no hallucinated squares make it to
+    the user -- the prompt wording alone isn't reliable enough on its own.
+    """
+    mentioned_squares = set(re.findall(r"\b[a-h][1-8]\b", explanation.lower()))
+    allowed_squares = {chess.square_name(move.from_square), chess.square_name(move.to_square)}
+    allowed_squares.update(extra_squares)
+    return mentioned_squares.issubset(allowed_squares)
+
+
+def get_ai_explanation(board, move, san_move):
+    fact, extra_squares = describe_move(board, move)
+    mover_color = "White" if board.piece_at(move.from_square).color == chess.WHITE else "Black"
     prompt = (
-        f"You are a master chess analyst. Given the board position in FEN format: '{fen}', "
-        f"Stockfish recommends playing the move '{san_move}'. "
-        f"In exactly 1 concise sentence, explain the tactical or strategic reason for this move "
-        f"using standard chess terms (like capturing a piece, controlling an open file, creating a threat). "
-        f"Do not include meta-commentary or mention FEN strings."
+        f"Chess move by {mover_color}. Established fact: {fact} "
+        "In one confident sentence, written the way a chess commentator would "
+        "describe this move, restate what's happening. Do not hedge with phrases "
+        "like 'this move makes sense because', 'is simply a quiet developing "
+        "move', or similar filler -- just state the fact plainly and directly, "
+        "as if you're confidently narrating the position. Do not mention any "
+        "square, file, piece, or plan that isn't part of the fact above. Do "
+        f"not attribute this move to the wrong side -- it is {mover_color}'s move."
     )
     try:
         response = bedrock.converse(
             modelId=BEDROCK_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
         )
-        return response["output"]["message"]["content"][0]["text"].strip()
+        # With reasoning enabled, content includes a reasoningContent block
+        # *and* a text block — find the text one rather than assuming index 0.
+        explanation = None
+        for block in response["output"]["message"]["content"]:
+            if "text" in block:
+                explanation = block["text"].strip()
+                break
+
+        if explanation is None:
+            return fact
+
+        # Deterministic backstop: if the model mentioned a square that isn't
+        # actually part of this move's true facts (the failure mode that
+        # produced the e5/diagonal/pawn-structure nonsense), don't show it --
+        # fall back to the ground-truth fact instead.
+        if not validate_explanation(explanation, move, extra_squares):
+            print(f"Rejected hallucinated explanation: {explanation!r}")
+            return fact
+
+        return explanation
     except Exception as e:
         print(f"Bedrock API error: {e}")
-        return "Could not fetch AI explanation right now."
+        return fact
 
 
 def get_best_move(board):
@@ -81,18 +309,27 @@ def get_best_move(board):
 
 @app.route("/analyse", methods=["POST"])
 def analyse():
+    import time
+    t0 = time.time()
+
     data = request.get_json()
     fen = data.get("fen")
     board = chess.Board(fen)
 
     best_move, eval_str = get_best_move(board)
+    t1 = time.time()
 
     try:
         san_move = board.san(best_move) if best_move else "—"
     except Exception:
         san_move = str(best_move)
 
-    explanation = get_ai_explanation(fen, san_move) if best_move else "No analysis available."
+    explanation = (
+        get_ai_explanation(board, best_move, san_move) if best_move else "No analysis available."
+    )
+    t2 = time.time()
+
+    print(f"[timing] stockfish={t1 - t0:.2f}s  bedrock={t2 - t1:.2f}s  total={t2 - t0:.2f}s")
 
     return jsonify({
         "best_move": str(best_move) if best_move else "",

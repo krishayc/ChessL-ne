@@ -182,8 +182,8 @@ nav {
   display: block;
 }
 
-.bw-path {
-  font-size: 11px;
+.bw-title {
+  font-size: 15px;
   color: var(--paper-faint);
   letter-spacing: 0.02em;
 }
@@ -382,7 +382,7 @@ nav {
   font-size: 12.5px;
   color: var(--paper-dim);
   line-height: 1.8;
-  max-width: 300px;
+  max-width: 350px;
 }
 .empty p strong { color: var(--amber); font-weight: 600; }
 
