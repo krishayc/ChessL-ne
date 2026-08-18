@@ -184,12 +184,6 @@ def describe_move(board, move):
 
 
 def validate_explanation(explanation, move, extra_squares):
-    """Reject the LLM's text if it references any square other than the
-    move's own from/to squares plus whatever extra squares describe_move()
-    actually computed (newly-attacked piece / newly-controlled center
-    square). This is what guarantees no hallucinated squares make it to
-    the user -- the prompt wording alone isn't reliable enough on its own.
-    """
     mentioned_squares = set(re.findall(r"\b[a-h][1-8]\b", explanation.lower()))
     allowed_squares = {chess.square_name(move.from_square), chess.square_name(move.to_square)}
     allowed_squares.update(extra_squares)
@@ -214,8 +208,6 @@ def get_ai_explanation(board, move, san_move):
             modelId=BEDROCK_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
         )
-        # With reasoning enabled, content includes a reasoningContent block
-        # *and* a text block — find the text one rather than assuming index 0.
         explanation = None
         for block in response["output"]["message"]["content"]:
             if "text" in block:
@@ -224,11 +216,6 @@ def get_ai_explanation(board, move, san_move):
 
         if explanation is None:
             return fact
-
-        # Deterministic backstop: if the model mentioned a square that isn't
-        # actually part of this move's true facts (the failure mode that
-        # produced the e5/diagonal/pawn-structure nonsense), don't show it --
-        # fall back to the ground-truth fact instead.
         if not validate_explanation(explanation, move, extra_squares):
             print(f"Rejected hallucinated explanation: {explanation!r}")
             return fact
