@@ -37,13 +37,6 @@ def shutdown_engine():
         pass
 
 
-# ── Ground-truth move description ──────────────────────────────────────────
-# The model used to be handed a raw FEN + SAN string and asked to figure out
-# what was actually happening on the board. That's exactly the kind of
-# spatial-reasoning step small/fast models get wrong. python-chess already
-# knows the real answer, so we compute it here and hand the model a fact to
-# explain instead of a puzzle to solve.
-
 PIECE_NAMES = {
     chess.PAWN: "pawn",
     chess.KNIGHT: "knight",
@@ -55,7 +48,6 @@ PIECE_NAMES = {
 
 
 def _rooks_connected(board, color):
-    """True if `color`'s two rooks are both on the back rank with nothing between them."""
     back_rank = 0 if color == chess.WHITE else 7
     rook = chess.Piece(chess.ROOK, color)
     rook_squares = [chess.square(f, back_rank) for f in range(8)
@@ -67,7 +59,6 @@ def _rooks_connected(board, color):
 
 
 def _semi_open_for_rook(board, color, file_idx):
-    """True if a friendly rook sits on `file_idx` and no pawn of `color` blocks that file."""
     rook = chess.Piece(chess.ROOK, color)
     pawn = chess.Piece(chess.PAWN, color)
     squares = [chess.square(file_idx, r) for r in range(8)]
@@ -77,12 +68,6 @@ def _semi_open_for_rook(board, color, file_idx):
 
 
 def _new_coverage(board, move):
-    """Squares the mover attacks from its destination that it did NOT
-    already attack from its origin square. This is the actual before/after
-    diff -- e.g. a rook sliding up the same open file it already controlled
-    covers no new squares along that file, so nothing on it should be
-    reported as 'newly' attacked or defended.
-    """
     before_attacks = board.attacks(move.from_square)
     board.push(move)
     after_attacks = board.attacks(move.to_square)
@@ -91,8 +76,6 @@ def _new_coverage(board, move):
 
 
 def _newly_attacked_pieces(board, move, color, new_squares):
-    """Opponent pieces newly covered by the mover (per `new_squares`,
-    already diffed against the pre-move attack set)."""
     targets = []
     for sq in new_squares:
         target = board.piece_at(sq)
@@ -102,8 +85,6 @@ def _newly_attacked_pieces(board, move, color, new_squares):
 
 
 def _newly_defended_pieces(board, move, color, new_squares):
-    """Friendly pieces newly covered by the mover (per `new_squares`) --
-    e.g. a rook sliding onto a rank/file that now protects its own bishop."""
     defended = []
     for sq in new_squares:
         target = board.piece_at(sq)
@@ -116,17 +97,10 @@ CENTER_SQUARES = {chess.D4, chess.D5, chess.E4, chess.E5}
 
 
 def _newly_controls_center(new_squares):
-    """Center squares (d4/d5/e4/e5) newly covered by the mover, per the
-    pre-diffed `new_squares` set."""
     return sorted(chess.square_name(sq) for sq in new_squares & CENTER_SQUARES)
 
 
 def _mobility(board, move):
-    """Number of squares the piece newly covers from its destination square,
-    vs. how many it covered from its origin square. Used as a last-resort
-    fact that is always true and always computable -- unlike the old
-    'quiet developing move' line, this never has nothing to say.
-    """
     before = len(board.attacks(move.from_square))
     board.push(move)
     after = len(board.attacks(move.to_square))
@@ -135,19 +109,6 @@ def _mobility(board, move):
 
 
 def describe_move(board, move):
-    """Plain-English, ground-truth description of `move` on `board` (pre-move).
-
-    Beyond the mechanical facts (mover/capture/check), the model kept inventing
-    generic-sounding positional claims -- "connects the rooks", "opens the file"
-    -- that weren't actually true of the position. So those specific claims are
-    now computed here too, and only ever mentioned if this exact move causes
-    them to flip from false to true. If they don't apply, they're just omitted.
-
-    For quiet moves with no capture/check/rook feature, we also compute what
-    the piece newly attacks and whether it newly contests the center -- real,
-    true facts that give the model something substantive to explain instead
-    of either inventing something false or being told to say nothing.
-    """
     mover = board.piece_at(move.from_square)
     color = mover.color
     from_file = chess.square_file(move.from_square)
@@ -196,11 +157,6 @@ def describe_move(board, move):
 
     has_capture = bool(re.search(r"capturing the", desc))
     has_promotion = bool(move.promotion)
-
-    # Only reach for the extra attack/center facts when the move doesn't
-    # already have a headline feature -- keeps the sentence focused for
-    # tactical moves, and gives quiet moves something real to say instead
-    # of nothing.
     extra_squares = []
     if not (has_capture or has_promotion or gives_check or connects_rooks or opens_file or is_castle):
         new_squares = _new_coverage(board, move)
