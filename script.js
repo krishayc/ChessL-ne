@@ -11,6 +11,7 @@ function initBoard() {
     draggable: true,
     onDrop:    onDrop,
     onSnapEnd: () => board.position(game.fen()),
+    
     pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
   });
   updateTurn();
@@ -177,6 +178,26 @@ async function analyse() {
     if (!res.ok) throw new Error('Server error');
     const data = await res.json();
 
+    if (data.game_over) {
+      document.getElementById('moveCard').classList.add('hidden');
+      document.getElementById('moveCard').classList.remove('is-visible');
+
+      const el = document.getElementById('explainText');
+      el.textContent = data.explanation;
+      el.className = 'explain-text';
+
+      clearHighlights();
+      document.getElementById('emptyState').style.display = 'none';
+      const explainCard = document.getElementById('explainCard');
+      explainCard.classList.remove('hidden');
+      requestAnimationFrame(() => explainCard.classList.add('is-visible'));
+
+      setStatus('ready', data.explanation);
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      return;
+    }
+
     const from = data.best_move.slice(0, 2).toLowerCase();
     const to   = data.best_move.slice(2, 4).toLowerCase();
 
@@ -185,14 +206,15 @@ async function analyse() {
     document.getElementById('mTo').textContent   = to;
 
     let evalValue = data.evaluation;
-    let pct = 50; 
-    
+    let pct = 50;
+
     if (evalValue.startsWith('M')) {
-      pct = evalValue.includes('-') ? 5 : 95;
+      pct = evalValue.includes('-') ? 2 : 98;
     } else {
-      let num = parseFloat(evalValue);
-      pct = 50 + (num * 10); 
-      pct = Math.max(5, Math.min(95, pct)); 
+      let pawns = parseFloat(evalValue);
+      let centipawns = pawns * 100;
+      let winPercent = 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * centipawns)) - 1);
+      pct = Math.max(2, Math.min(98, winPercent));
     }
 
     document.getElementById('evalFill').style.width  = pct.toFixed(1) + '%';

@@ -30,7 +30,6 @@ engine_lock = threading.Lock()
 
 @atexit.register
 def shutdown_engine():
-    """Make sure Stockfish is closed cleanly when Flask shuts down."""
     try:
         engine.quit()
     except Exception:
@@ -157,6 +156,7 @@ def describe_move(board, move):
 
     has_capture = bool(re.search(r"capturing the", desc))
     has_promotion = bool(move.promotion)
+
     extra_squares = []
     if not (has_capture or has_promotion or gives_check or connects_rooks or opens_file or is_castle):
         new_squares = _new_coverage(board, move)
@@ -208,6 +208,7 @@ def get_ai_explanation(board, move, san_move):
             modelId=BEDROCK_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
         )
+
         explanation = None
         for block in response["output"]["message"]["content"]:
             if "text" in block:
@@ -216,6 +217,7 @@ def get_ai_explanation(board, move, san_move):
 
         if explanation is None:
             return fact
+
         if not validate_explanation(explanation, move, extra_squares):
             print(f"Rejected hallucinated explanation: {explanation!r}")
             return fact
@@ -235,7 +237,7 @@ def get_best_move(board):
 
         eval_str = "0.00"
         if "score" in info:
-            score = info["score"].relative
+            score = info["score"].white()
             if score.is_mate():
                 eval_str = f"M{score.mate()}"
             else:
@@ -259,6 +261,32 @@ def analyse():
     fen = data.get("fen")
     board = chess.Board(fen)
 
+    if board.is_game_over(claim_draw=True):
+        if board.is_checkmate():
+            winner = "Black" if board.turn == chess.WHITE else "White"
+            reason = f"Checkmate — {winner} wins."
+        elif board.is_stalemate():
+            reason = "Draw by stalemate — the side to move has no legal moves."
+        elif board.is_insufficient_material():
+            reason = "Draw by insufficient material — neither side has enough pieces to force checkmate."
+        elif board.is_seventyfive_moves():
+            reason = "Draw by the 75-move rule."
+        elif board.is_fivefold_repetition():
+            reason = "Draw by fivefold repetition."
+        elif board.can_claim_draw():
+            reason = "Draw — position can be claimed as a draw (50-move rule or threefold repetition)."
+        else:
+            reason = "Game over."
+
+        return jsonify({
+            "best_move": "",
+            "san_move": "",
+            "evaluation": "0.00",
+            "explanation": reason,
+            "game_over": True,
+            "turn": "white" if board.turn == chess.WHITE else "black"
+        })
+
     best_move, eval_str = get_best_move(board)
     t1 = time.time()
 
@@ -279,6 +307,7 @@ def analyse():
         "san_move": san_move,
         "evaluation": eval_str,
         "explanation": explanation,
+        "game_over": False,
         "turn": "white" if board.turn == chess.WHITE else "black"
     })
 
